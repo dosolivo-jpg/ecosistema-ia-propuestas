@@ -1,0 +1,285 @@
+{
+  "name": "Ecosistema IA — Propuestas Comerciales Automatizadas",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "filters": {
+          "formula": "AND({Estado}='Solicitud nueva', {Idea Semilla}!='')"
+        },
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" }
+      },
+      "name": "Trigger — Airtable: Nueva solicitud",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "id": "node_01"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblRAGContexto", "mode": "id" },
+        "filterByFormula": "AND({Cliente}='{{$json.fields.Cliente}}', {Verificado}=TRUE())",
+        "fields": ["Tema", "Contenido RAG"]
+      },
+      "name": "RAG — Buscar contexto de cliente",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "id": "node_02"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst contexto = items.map(i => `[${i.json.fields.Tema}]: ${i.json.fields['Contenido RAG']}`).join('\\n');\nconst trigger = $('Trigger — Airtable: Nueva solicitud').item.json;\nreturn [{ json: {\n  contexto_marca: contexto,\n  nombre_cliente: trigger.fields['Nombre cliente'],\n  empresa: trigger.fields['Empresa'],\n  servicio: trigger.fields['Servicio solicitado'],\n  presupuesto: trigger.fields['Presupuesto estimado'],\n  tono: trigger.fields['Tono'] || 'Profesional',\n  record_id: trigger.id\n}}];"
+      },
+      "name": "Preparar variables del prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "id": "node_03"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "model": "claude-sonnet-4-6",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "=PROVEEDOR / CONTEXTO DE MARCA:\n{{ $json.contexto_marca }}\n\nSOLICITUD DEL CLIENTE:\nNombre: {{ $json.nombre_cliente }}\nEmpresa: {{ $json.empresa }}\nServicio solicitado: {{ $json.servicio }}\nPresupuesto estimado: {{ $json.presupuesto }}\nTono deseado: {{ $json.tono }}\n\nRedactá una propuesta comercial completa en formato JSON con estos campos:\n{\n  \"asunto\": \"Asunto del email\",\n  \"saludo\": \"Párrafo de apertura personalizado\",\n  \"propuesta\": \"Desarrollo de la propuesta (3 párrafos)\",\n  \"beneficios\": [\"Beneficio 1\", \"Beneficio 2\", \"Beneficio 3\"],\n  \"precio\": \"Rango de precio estimado con justificación\",\n  \"cta\": \"Llamada a la acción final\",\n  \"puntuacion_lead\": 1-10\n}"
+            }
+          ]
+        },
+        "system": "Actúa como un consultor comercial senior especializado en propuestas de alto valor para PyMEs latinoamericanas.\n\nReglas de comportamiento:\n1. Tu ÚNICA fuente de información de la agencia es el CONTEXTO DE MARCA provisto.\n2. No uses conocimiento externo ni inventes servicios o precios no mencionados.\n3. Piensa paso a paso antes de redactar la propuesta final.\n4. Si un dato está ausente en el CONTEXTO, indica 'A confirmar con el equipo'.\n5. Devolvé SIEMPRE el resultado en formato JSON válido, sin texto adicional.",
+        "options": { "maxTokens": 1500 }
+      },
+      "name": "Claude — Generar propuesta comercial",
+      "type": "n8n-nodes-base.anthropic",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "id": "node_04"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.item.json.content[0].text;\ntry {\n  const clean = raw.replace(/```json|```/g, '').trim();\n  const parsed = JSON.parse(clean);\n  return [{ json: {\n    asunto: parsed.asunto,\n    saludo: parsed.saludo,\n    propuesta: parsed.propuesta,\n    beneficios: parsed.beneficios.join('\\n• '),\n    precio: parsed.precio,\n    cta: parsed.cta,\n    puntuacion_lead: parsed.puntuacion_lead,\n    record_id: $('Preparar variables del prompt').item.json.record_id,\n    parse_ok: true\n  }}];\n} catch(e) {\n  return [{ json: { parse_ok: false, error: e.message, raw: raw, record_id: $('Preparar variables del prompt').item.json.record_id }}];\n}"
+      },
+      "name": "Parsear JSON de Claude",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "id": "node_05"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [{ "leftValue": "={{ $json.parse_ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" }}]
+        }
+      },
+      "name": "IF — ¿Parse exitoso?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "id": "node_06"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" },
+        "id": "={{ $json.record_id }}",
+        "fields": {
+          "values": [
+            { "fieldId": "fldBorradorPropuesta", "fieldValue": "={{ $json.saludo }}\\n\\n{{ $json.propuesta }}\\n\\nBeneficios:\\n• {{ $json.beneficios }}\\n\\nInversión: {{ $json.precio }}\\n\\n{{ $json.cta }}" },
+            { "fieldId": "fldPuntuacionLead", "fieldValue": "={{ $json.puntuacion_lead }}" },
+            { "fieldId": "fldEstado", "fieldValue": "Pendiente HITL" },
+            { "fieldId": "fldTimestampIA", "fieldValue": "={{ $now }}" }
+          ]
+        }
+      },
+      "name": "Airtable — Guardar borrador (Pendiente HITL)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1560, 180],
+      "id": "node_07"
+    },
+    {
+      "parameters": {
+        "channel": "#revisión-propuestas",
+        "text": "=📋 *Nueva propuesta lista para revisar*\n\n*Cliente:* {{ $('Preparar variables del prompt').item.json.nombre_cliente }} — {{ $('Preparar variables del prompt').item.json.empresa }}\n*Servicio:* {{ $('Preparar variables del prompt').item.json.servicio }}\n*Puntuación lead IA:* {{ $json.puntuacion_lead }}/10\n\n*Asunto propuesto:* {{ $json.asunto }}\n\n---\n✅ Para aprobar: abrí Airtable y cambiá el checkbox *Aprobado* a verdadero.\n🔗 https://airtable.com/YOUR_BASE_LINK/{{ $json.record_id }}"
+      },
+      "name": "Slack — Notificación HITL al equipo",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1780, 180],
+      "id": "node_08"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" },
+        "id": "={{ $json.record_id }}",
+        "fields": {
+          "values": [
+            { "fieldId": "fldEstado", "fieldValue": "Error de procesamiento" },
+            { "fieldId": "fldDetalleError", "fieldValue": "={{ $json.error }}" },
+            { "fieldId": "fldTimestampIA", "fieldValue": "={{ $now }}" }
+          ]
+        }
+      },
+      "name": "Airtable — Registrar error de parseo",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1560, 440],
+      "id": "node_09"
+    },
+    {
+      "parameters": {
+        "channel": "#ops-errores",
+        "text": "=⚠️ *Error en pipeline de propuestas*\n*Record ID:* {{ $json.record_id }}\n*Error:* {{ $json.error }}\n*Fecha:* {{ $now }}\nRevisar manualmente en Airtable."
+      },
+      "name": "Slack — Alerta de error",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1780, 440],
+      "id": "node_10"
+    },
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "filters": {
+          "formula": "AND({Estado}='Pendiente HITL', {Aprobado}=TRUE())"
+        },
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" }
+      },
+      "name": "Trigger — Airtable: Propuesta aprobada (HITL)",
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [240, 700],
+      "id": "node_11"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "leftValue": "={{ $json.fields.Aprobado }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" }},
+            { "leftValue": "={{ $json.fields.Estado }}", "rightValue": "Pendiente HITL", "operator": { "type": "string", "operation": "equals" }}
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "IF — Doble verificación HITL",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 700],
+      "id": "node_12"
+    },
+    {
+      "parameters": {
+        "fromEmail": "propuestas@tuagencia.com",
+        "toEmail": "={{ $json.fields['Email cliente'] }}",
+        "subject": "={{ $json.fields['Asunto propuesta'] }}",
+        "emailType": "text",
+        "message": "={{ $json.fields['Borrador propuesta'] }}"
+      },
+      "name": "Gmail — Enviar propuesta al cliente",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [680, 600],
+      "id": "node_13"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" },
+        "id": "={{ $json.fields.id }}",
+        "fields": {
+          "values": [
+            { "fieldId": "fldEstado", "fieldValue": "Propuesta enviada" },
+            { "fieldId": "fldTimestampEnvio", "fieldValue": "={{ $now }}" }
+          ]
+        }
+      },
+      "name": "Airtable — Estado: Propuesta enviada",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [900, 600],
+      "id": "node_14"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLogOperaciones", "mode": "id" },
+        "fields": {
+          "values": [
+            { "fieldId": "fldFecha", "fieldValue": "={{ $now }}" },
+            { "fieldId": "fldAccion", "fieldValue": "Propuesta enviada" },
+            { "fieldId": "fldCliente", "fieldValue": "={{ $json.fields['Nombre cliente'] }}" },
+            { "fieldId": "fldEstado", "fieldValue": "OK" }
+          ]
+        }
+      },
+      "name": "Log — Registrar envío exitoso",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [1120, 600],
+      "id": "node_15"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": { "__rl": true, "value": "YOUR_AIRTABLE_BASE_ID", "mode": "id" },
+        "table": { "__rl": true, "value": "tblLeads", "mode": "id" },
+        "id": "={{ $json.id }}",
+        "fields": {
+          "values": [
+            { "fieldId": "fldEstado", "fieldValue": "Rechazado por HITL" },
+            { "fieldId": "fldTimestampEnvio", "fieldValue": "={{ $now }}" }
+          ]
+        }
+      },
+      "name": "Airtable — Estado: Rechazado HITL",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [680, 820],
+      "id": "node_16"
+    }
+  ],
+  "connections": {
+    "Trigger — Airtable: Nueva solicitud": { "main": [[{ "node": "RAG — Buscar contexto de cliente", "type": "main", "index": 0 }]] },
+    "RAG — Buscar contexto de cliente": { "main": [[{ "node": "Preparar variables del prompt", "type": "main", "index": 0 }]] },
+    "Preparar variables del prompt": { "main": [[{ "node": "Claude — Generar propuesta comercial", "type": "main", "index": 0 }]] },
+    "Claude — Generar propuesta comercial": { "main": [[{ "node": "Parsear JSON de Claude", "type": "main", "index": 0 }]] },
+    "Parsear JSON de Claude": { "main": [[{ "node": "IF — ¿Parse exitoso?", "type": "main", "index": 0 }]] },
+    "IF — ¿Parse exitoso?": {
+      "main": [
+        [{ "node": "Airtable — Guardar borrador (Pendiente HITL)", "type": "main", "index": 0 }],
+        [{ "node": "Airtable — Registrar error de parseo", "type": "main", "index": 0 }]
+      ]
+    },
+    "Airtable — Guardar borrador (Pendiente HITL)": { "main": [[{ "node": "Slack — Notificación HITL al equipo", "type": "main", "index": 0 }]] },
+    "Airtable — Registrar error de parseo": { "main": [[{ "node": "Slack — Alerta de error", "type": "main", "index": 0 }]] },
+    "Trigger — Airtable: Propuesta aprobada (HITL)": { "main": [[{ "node": "IF — Doble verificación HITL", "type": "main", "index": 0 }]] },
+    "IF — Doble verificación HITL": {
+      "main": [
+        [{ "node": "Gmail — Enviar propuesta al cliente", "type": "main", "index": 0 }],
+        [{ "node": "Airtable — Estado: Rechazado HITL", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gmail — Enviar propuesta al cliente": { "main": [[{ "node": "Airtable — Estado: Propuesta enviada", "type": "main", "index": 0 }]] },
+    "Airtable — Estado: Propuesta enviada": { "main": [[{ "node": "Log — Registrar envío exitoso", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "tags": ["entrega-final", "propuestas-comerciales", "IA", "HITL", "RAG"],
+  "meta": {
+    "description": "Ecosistema de automatización IA para generación de propuestas comerciales. Integra Airtable (RAG + DB), Claude (IA), n8n (orquestador), Slack (HITL) y Gmail (salida). Incluye manejo de errores y doble validación HITL.",
+    "version": "1.0.0"
+  }
+}
